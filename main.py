@@ -1,86 +1,108 @@
+# a simple AI Agent for Render deployment made eith unicorn
 import os
-import sys
-import chainlit as cl
+from fastapi import FastAPI, Form
+from fastapi.responses import HTMLResponse
 from langchain_community.tools import DuckDuckGoSearchRun
 
-# Initialize the free search tool
+app = FastAPI(title="Local AI Management Agent")
 search_tool = DuckDuckGoSearchRun()
 
-# In-memory database (Resets when Render container sleeps)
+# Local data mock-up
 TODO_LIST = ["Deploy agent to Render", "Review production logs"]
 
-def parse_and_execute(user_input: str) -> str:
-    """The Agent Core: Parses intents and executes the correct tool."""
-    text = user_input.lower().strip()
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AI Management Agent</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #f4f6f9; margin: 0; padding: 20px; color: #333; }}
+        .container {{ max-width: 600px; margin: 0 auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }}
+        h1 {{ font-size: 24px; color: #1e293b; margin-top: 0; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; }}
+        .card {{ background: #f8fafc; border: 1px solid #e2e8f0; padding: 15px; border-radius: 8px; margin-bottom: 20px; }}
+        .task-item {{ display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #edf2f7; }}
+        .task-item:last-child {{ border: none; }}
+        .form-group {{ display: flex; gap: 10px; margin-bottom: 15px; }}
+        input[type="text"] {{ flex: 1; padding: 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 16px; }}
+        button {{ background: #2563eb; color: white; border: none; padding: 10px 18px; border-radius: 6px; cursor: pointer; font-size: 16px; font-weight: 500; }}
+        button:hover {{ background: #1d4ed8; }}
+        .response-box {{ background: #eff6ff; border-left: 4px solid #3b82f6; padding: 15px; border-radius: 4px; margin-top: 20px; font-size: 15px; line-height: 1.5; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 AI Management Agent</h1>
+        
+        <div class="card">
+            <h3>📋 Active To-Do List</h3>
+            {todo_items}
+        </div>
+
+        <form method="POST" action="/action" class="form-group">
+            <input type="text" name="command" placeholder="Try: 'add buy milk' or 'search python news'..." required autofocus>
+            <button type="submit">Execute</button>
+        </form>
+
+        {response_section}
+    </div>
+</body>
+</html>
+"""
+
+def get_rendered_page(agent_response=""):
+    # Build list elements
+    if not TODO_LIST:
+        todo_items = "<p style='color: #718096; margin: 0;'>Your list is empty.</p>"
+    else:
+        todo_items = "".join([f"<div class='task-item'><span>📝 {item}</span></div>" for item in TODO_LIST])
     
-    # Tool 1: View To-Do List
-    if any(k in text for k in ["show list", "view list", "get list", "todo list", "what are my tasks"]):
-        if not TODO_LIST:
-            return "📋 Your to-do list is currently empty."
-        return "📋 **Current To-Do List:**\n" + "\n".join([f"{i+1}. {item}" for i, item in enumerate(TODO_LIST)])
+    # Render fallback box if response is active
+    response_section = ""
+    if agent_response:
+        response_section = f"<div class='response-box'><strong>System Output:</strong><br>{agent_response}</div>"
+        
+    return HTMLResponse(content=HTML_TEMPLATE.format(todo_items=todo_items, response_section=response_section))
+
+@app.get("/", response_class=HTMLResponse)
+async def index():
+    return get_rendered_page()
+
+@app.post("/action", response_class=HTMLResponse)
+async def handle_command(command: str = Form(...)):
+    global TODO_LIST
+    text = command.lower().strip()
     
-    # Tool 2: Add to To-Do List
-    elif text.startswith("add "):
-        task = user_input[4:].strip()
+    # 1. Add Task Rule
+    if text.startswith("add "):
+        task = command[4:].strip()
         if task:
             TODO_LIST.append(task)
-            return f"✅ Successfully added: \"{task}\" to your tasks."
-        return "❌ Please specify a task to add. Example: `add buy milk`"
-        
-    # Tool 3: Remove from To-Do List
+            return get_rendered_page(f"✅ Successfully added: '{task}'")
+            
+    # 2. Remove Task Rule
     elif text.startswith("remove ") or text.startswith("delete "):
-        task_to_remove = user_input[7:].strip()
-        
-        # Try numeric match first
-        if task_to_remove.isdigit():
-            idx = int(task_to_remove) - 1
-            if 0 <= idx < len(TODO_LIST):
-                removed = TODO_LIST.pop(idx)
-                return f"🗑️ Removed task #{idx+1}: \"{removed}\""
-            return "❌ Task number out of range."
-            
-        # Try text match
+        target = command[7:].strip()
         for item in TODO_LIST:
-            if task_to_remove.lower() in item.lower():
+            if target.lower() in item.lower():
                 TODO_LIST.remove(item)
-                return f"🗑️ Removed task matching: \"{item}\""
-        return f"❌ Could not find a task matching \"{task_to_remove}\"."
-
-    # Tool 4: Web Search
-    elif any(k in text for k in ["search", "google", "lookup", "find out"]):
-        # Extract query
-        query = user_input
-        for word in ["search for", "search", "google", "lookup"]:
-            if text.startswith(word):
-                query = user_input[len(word):].strip()
-                break
+                return get_rendered_page(f"🗑️ Removed task matching: '{item}'")
+        return get_rendered_page(f"❌ Could not find a task matching '{target}'.")
         
+    # 3. Web Search Rule
+    elif text.startswith("search "):
+        query = command[7:].strip()
         try:
-            return f"🔍 **Web Search Results for '{query}':**\n\n" + search_tool.run(query)
+            results = search_tool.run(query)
+            return get_rendered_page(f"🔍 **Search Results:**<br>{results}")
         except Exception as e:
-            return f"❌ Search failed: {str(e)}"
-            
-    # Help / Fallback Persona
-    return (
-        "🤖 **Local AI Management Agent**\n\n"
-        "I am running entirely inside Render's free tier without any API dependencies. Here is what I can do for you:\n\n"
-        "*   **View Tasks:** Type `show list` or `todo list`\n"
-        "*   **Add Task:** Type `add <your task>` (e.g., `add review pull requests`)\n"
-        "*   **Remove Task:** Type `remove <task name or number>` (e.g., `remove 1`)\n"
-        "*   **Web Search:** Type `search <your query>` (e.g., `search latest python release`)"
-    )
+            return get_rendered_page(f"❌ Search failed: {str(e)}")
 
-@cl.on_chat_start
-async def start():
-    welcome_msg = (
-        "👋 Hello! I am your local Python Agent, running live on Render.\n"
-        "I require **zero API keys** and operate entirely within free memory constraints. "
-        "Type `show list` or `help` to get started!"
-    )
-    await cl.Message(content=welcome_msg).send()
-
-@cl.on_message
-async def main(message: cl.Message):
-    # Process the user input through the agent routing loop
-    response_text = parse_and_execute(message.content)
-    await cl.Message(content=response_text).send()
+    # Default Help Fallback
+    return get_rendered_page(
+        "💡 **Unknown Command Form.** Use these formats:<br>"
+        "• <code>add [task text]</code> to queue items.<br>"
+        "• <code>remove [task text]</code> to clear items.<br>"
+        "• <code>search [topic]</code> to browse live web info."
+            )
+    
